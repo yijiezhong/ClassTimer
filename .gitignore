@@ -1,0 +1,16 @@
+# ClassTimer 自己的忽略规则。
+# 父仓库 TrainingTool 用的是白名单模式（* 全忽略再逐个放行），这套规则不冲突；
+# 如果将来把 ClassTimer 单独 git init 成公开仓库，这份 .gitignore 保证
+# 构建产物、DMG 与有版权的音效不会被误提交。
+
+.DS_Store
+
+# 交接文档是内部材料，不随仓库发布
+交接文档.md
+
+# 构建与打包产物
+build/
+dist/
+
+# 提示音随仓库保留（Resources/*.wav）；
+# 可用 scripts/make_sounds.sh / make_soft_sounds.sh 重新生成
