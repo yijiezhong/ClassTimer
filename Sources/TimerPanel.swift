@@ -55,7 +55,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var projectionPanel: TimerPanel?
     private var aboutWindow: NSWindow?
     private let appearanceSampler = AppearanceSampler()
-    private var projectionMoveObserver: NSObjectProtocol?
 
     // MARK: - 启动
 
@@ -293,16 +292,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 位置
 
-    /// 每次启动都放在屏幕右上角（不恢复上次拖到的位置）。
-    /// 这是用户明确要求的：讲课前后习惯固定位置，恢复到上次位置反而要找。
+    /// 每次启动都把手动摆到固定角落（不恢复上次拖到的位置）。
+    ///
+    /// 位置策略（配合 Keynote 双屏放映）：
+    /// - **双屏**：讲师屏（内置屏，通常是 Keynote 的演讲者显示器）→ **右下角**，
+    ///   避开演讲者视图右侧的备注/下一张幻灯片预览；投影屏（播放显示器）→ 右上角。
+    /// - **单屏**：右上角（普通计时场景，不挡标题栏与内容）。
     private func restorePanelFrame() {
         let size = NSSize(width: TimerView.width, height: TimerView.initialHeight)
-        // screens.first 是带菜单栏的主屏；NSScreen.main 是"当前焦点屏"，
-        // 拿它做默认位置会在多屏环境下把窗口丢到副屏去。
-        let home = NSScreen.screens.first
+        let screens = NSScreen.screens
+        let isDualScreen = screens.count > 1
+        // 内置屏 = 讲师笔记本屏，Keynote 演讲者显示器默认在这块屏上
+        let home = (isDualScreen ? builtInScreen() : nil)
+            ?? screens.first
         let visible = home?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let origin = defaultOrigin(in: visible, size: size)
+        let origin = isDualScreen
+            ? bottomRightOrigin(in: visible, size: size)
+            : defaultOrigin(in: visible, size: size)
         panel.setFrame(NSRect(origin: origin, size: size), display: false)
+        model.debugLog("restorePanelFrame dual=\(isDualScreen) origin=\(origin)")
+    }
+
+    /// 内置屏（笔记本屏）——Keynote 演讲者显示器默认所在
+    private func builtInScreen() -> NSScreen? {
+        NSScreen.screens.first { screen in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+                return false
+            }
+            return CGDisplayIsBuiltin(CGDirectDisplayID(number.uint32Value)) != 0
+        }
+    }
+
+    /// 右下角（AppKit 左下原点：x 靠右、y 靠下）
+    private func bottomRightOrigin(in visible: NSRect, size: NSSize) -> NSPoint {
+        let inset: CGFloat = 12
+        return NSPoint(
+            x: visible.maxX - size.width - inset,
+            y: visible.minY + inset
+        )
     }
 
     /// 默认位置：屏幕右上角，留 12pt 让卡片阴影不被屏幕边缘裁掉
@@ -396,10 +423,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - 投影（第二块屏）
 
-    /// 主屏之外的第一块屏；单屏时返回 nil
+    /// 播放显示器（投影屏）：优先非内置屏（外接显示器）；
+    /// 全是外接屏的台式机场景，取第一块非主屏。
+    /// 单屏时返回 nil。
     private var externalScreen: NSScreen? {
         let screens = NSScreen.screens
         guard screens.count > 1 else { return nil }
+        if let builtin = builtInScreen(),
+           let external = screens.first(where: { $0 !== builtin }) {
+            return external
+        }
         let primary = screens.first
         return screens.first { $0 !== primary }
     }
@@ -459,48 +492,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         projectionPanel = panel
 
-        projectionMoveObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didMoveNotification,
-            object: panel,
-            queue: .main
-        ) { [weak self] _ in
-            self?.saveProjectionOrigin()
-        }
     }
 
+    /// 播放显示器（投影屏）上的只读板固定在**右上角**，避开幻灯片主体内容。
+    /// 不恢复上次拖到的位置——每堂课位置一致才不用找。
     private func positionProjection(on screen: NSScreen) {
         guard let panel = projectionPanel else { return }
         let size = panel.frame.size
         let visible = screen.visibleFrame
-        let defaults = UserDefaults.standard
-
-        var origin = centeredProjectionOrigin(in: visible, size: size)
-        if defaults.object(forKey: "projectionX") != nil {
-            let saved = NSPoint(
-                x: defaults.double(forKey: "projectionX"),
-                y: defaults.double(forKey: "projectionY")
-            )
-            let savedFrame = NSRect(origin: saved, size: size)
-            // 只要还压在投影屏上就沿用，否则回到屏幕中央
-            if visible.intersects(savedFrame) {
-                origin = saved
-            }
-        }
-        panel.setFrame(NSRect(origin: origin, size: size), display: false)
-    }
-
-    private func centeredProjectionOrigin(in visible: NSRect, size: NSSize) -> NSPoint {
-        NSPoint(
-            x: visible.midX - size.width / 2,
-            y: visible.midY - size.height / 2 + visible.height * 0.05
+        let inset: CGFloat = 24
+        let origin = NSPoint(
+            x: visible.maxX - size.width - inset,
+            y: visible.maxY - size.height - inset
         )
-    }
-
-    private func saveProjectionOrigin() {
-        guard let origin = projectionPanel?.frame.origin else { return }
-        let defaults = UserDefaults.standard
-        defaults.set(Double(origin.x), forKey: "projectionX")
-        defaults.set(Double(origin.y), forKey: "projectionY")
+        panel.setFrame(NSRect(origin: origin, size: size), display: false)
+        model.debugLog("projection origin=\(origin) screen=\(screen.localizedName)")
     }
 
     // MARK: - 状态栏
